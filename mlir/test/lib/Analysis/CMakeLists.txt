@@ -8,6 +8,7 @@ add_mlir_library(MLIRTestAnalysis
   TestMemRefDependenceCheck.cpp
   TestMemRefStrideCalculation.cpp
   TestNumberOfExecutions.cpp
+  TestValueRangePropagation.cpp
   TestSlice.cpp
 
 

@@ -92,6 +92,7 @@ void registerTestLinalgHoisting();
 void registerTestLinalgTileAndFuseSequencePass();
 void registerTestLinalgTransforms();
 void registerTestLivenessPass();
+void registerTestValueRangePropagationPass();
 void registerTestLoopFusion();
 void registerTestLoopMappingPass();
 void registerTestLoopUnrollingPass();
@@ -184,6 +185,7 @@ void registerTestPasses() {
   mlir::test::registerTestLinalgTileAndFuseSequencePass();
   mlir::test::registerTestLinalgTransforms();
   mlir::test::registerTestLivenessPass();
+  mlir::test::registerTestValueRangePropagationPass();
   mlir::test::registerTestLoopFusion();
   mlir::test::registerTestLoopMappingPass();
   mlir::test::registerTestLoopUnrollingPass();

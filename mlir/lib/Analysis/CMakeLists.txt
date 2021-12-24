@@ -14,6 +14,7 @@ set(LLVM_OPTIONAL_SOURCES
   PresburgerSet.cpp
   SliceAnalysis.cpp
   Utils.cpp
+  ValueRangePropagation.cpp
 
   AliasAnalysis/LocalAliasAnalysis.cpp
   )
@@ -27,6 +28,7 @@ add_mlir_library(MLIRAnalysis
   Liveness.cpp
   NumberOfExecutions.cpp
   SliceAnalysis.cpp
+  ValueRangePropagation.cpp
 
   AliasAnalysis/LocalAliasAnalysis.cpp
 
