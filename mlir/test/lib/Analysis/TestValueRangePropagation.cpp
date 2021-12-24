@@ -26,9 +26,10 @@ struct TestValueRangePropagationPass
     return "Print the results of value range propagation.";
   }
   void runOnFunction() override {
-    llvm::errs() << "Testing : " << getFunction().getName() << "\n";
-    FloatRangeAnalysis analysis (&getContext());
-    analysis.runOnOperation(getOperation());
+    llvm::errs() << "Testing function: " << getFunction().getName() << "\n";
+    VRPAnalysis analysis(&getContext());
+    analysis.run(getOperation());
+    analysis.print(getOperation(), llvm::errs());
   }
 };
 

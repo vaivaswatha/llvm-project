@@ -10,21 +10,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/ValueRangePropagation.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/Dialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/IR/Dialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/Passes.h"
+#include <utility>
 
 namespace mlir {
 
 template <typename VRV>
-ChangeResult VRPAnalysis<VRV>::visitOperation(
+ChangeResult VRPAnalysisBase<VRV>::visitOperation(
     Operation *op, ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) {
 
   SmallVector<VRPRange<VRV>> opdsRange(
@@ -49,30 +50,59 @@ ChangeResult VRPAnalysis<VRV>::visitOperation(
     // visited and if it has widened since then.
     // If so, then push it to <-INF, INF>. TODO.
 
-    LatticeElement<VRPLatticeEl<VRV>> foldResult(
-        (VRPLatticeEl<VRV>(foldResults[i])));
-    result |= lattice.join(foldResult);
+    result |= lattice.join(foldResults[i]);
   }
   return result;
 }
 
-LogicalResult
-FloatRangeAnalysis::rangeFold(Operation *op, ArrayRef<VRPRange<float>> operands,
-                                SmallVectorImpl<VRPRange<float>> &results) {
-  llvm::errs() << "Analyzing operation: ";
-  op->print(llvm::errs());
-  llvm::errs() << "\n";
-
-  if (isa<math::AbsOp>(op)) {
-    llvm::errs() << op->getResult(0).getType() << "\n";
-    llvm::errs() << FloatAttr::get(FloatType::getF32(op->getContext()), 0.11);
-  }
-  return failure();
+template <typename VRV>
+void VRPAnalysisBase<VRV>::print(Operation *topLevelOp, raw_ostream &os) {
+  topLevelOp->walk([&os, this](mlir::Operation *op) {
+    for (Value result : op->getOpResults()) {
+      LatticeElement<VRPLatticeEl<VRV>> *lattice =
+          this->lookupLatticeElement(result);
+      if (lattice && !lattice->isUninitialized()) {
+        os << result << " : ";
+        lattice->getValue().print(os);
+        os << "\n";
+      }
+    }
+  });
 }
 
-void FloatRangeAnalysis::runOnOperation(Operation *op) {
-  FloatRangeAnalysis analysis(op->getContext());
-  analysis.run(op);
+llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
+  Type thisType = getType();
+  Type rhsType = rhs.getType();
+
+  if (thisType != rhsType) {
+    return {};
+  }
+  if (thisType.isa<FloatType>()) {
+    return {cast<FloatAttr>().getValue() < rhs.cast<FloatAttr>().getValue()};
+  }
+  if (IntegerType thisIntType = thisType.dyn_cast<IntegerType>()) {
+    if (thisIntType.isSigned()) {
+      return cast<IntegerAttr>().getValue().slt(
+          rhs.cast<IntegerAttr>().getValue());
+    }
+    cast<IntegerAttr>().getValue().ult(rhs.cast<IntegerAttr>().getValue());
+  }
+  // Don't know
+  return {};
+}
+
+LogicalResult
+VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPRange<VRPAttribute>> operands,
+                       SmallVectorImpl<VRPRange<VRPAttribute>> &results) {
+
+  if (isa<math::AbsOp>(op)) {
+    VRPValue<VRPAttribute> lb(FloatAttr::get(op->getResultTypes()[0], 0.0));
+    VRPValue<VRPAttribute> ub(VRPValue<VRPAttribute>::getPInfinity());
+    VRPRange<VRPAttribute> resRange(lb, ub);
+    results.push_back(resRange);
+    return success();
+  }
+  return failure();
 }
 
 } // namespace mlir

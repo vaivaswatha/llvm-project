@@ -24,9 +24,12 @@ using namespace mlir;
 namespace mlir {
 
 // We compute a range <VRPValue, VRPValue> for each mlir::Value.
-// The type parameter T must have the following operations defined:
-//   bool operator<(const T &lhs, const T &rhs)
-//   bool operator==(const T &lhs, const T &rhs)
+// The type parameter T must have the following methods defined:
+//   llvm::Optional<bool> cmpLT(const T &rhs) const
+//   static bool operator==(const T &lhs, const T &rhs)
+//   void print(raw_ostream &os) const;
+// The compare less-than function (cmpLT) returns None when
+// the the values are not comparable.
 template <typename T>
 class VRPValue {
 
@@ -37,7 +40,7 @@ class VRPValue {
   } infinityStatus;
   T value;
 
-  VRPValue(InfinityStatus is) : infinityStatus(is){};
+  VRPValue(InfinityStatus is) : infinityStatus(is), value({}){};
 
 public:
   VRPValue(const T &v) : infinityStatus(NotINF), value(v){};
@@ -51,20 +54,46 @@ public:
   bool operator==(const VRPValue &rhs) const {
     return infinityStatus == rhs.infinityStatus && value == rhs.value;
   }
-  bool operator<(const VRPValue &rhs) const {
-    return (isMInfinity() && !rhs.isMInfinity()) ||
-           (!isPInfinity() && rhs.isPInfinity()) ||
-           (!isInfinity() && !rhs.isInfinity() && value < rhs.value);
+
+  llvm::Optional<bool> cmpLT(const VRPValue &rhs) const {
+    if ((isMInfinity() && rhs.isMInfinity()) ||
+        (isPInfinity() && rhs.isPInfinity())) {
+      // Incomparable
+      return {};
+    }
+    if ((isMInfinity() || rhs.isPInfinity())) {
+      return {true};
+    }
+    if (isPInfinity() || rhs.isMInfinity())
+      return {false};
+
+    assert(!isInfinity() && !rhs.isInfinity());
+
+    return value.cmpLT(rhs.value);
   }
 
-  bool operator<=(const VRPValue &rhs) const {
-    return *this < rhs || *this == rhs;
+  llvm::Optional<bool> cmpLE(const VRPValue &rhs) const {
+    return cmpLT(rhs).getValueOr(*this == rhs);
   };
-  static const VRPValue &min(const VRPValue &lhs, const VRPValue &rhs) {
-    return lhs <= rhs ? lhs : rhs;
+
+  static llvm::Optional<VRPValue> min(const VRPValue &lhs,
+                                      const VRPValue &rhs) {
+    return lhs.cmpLE(rhs).map([&lhs, &rhs](bool le) { return le ? lhs : rhs; });
   }
-  static const VRPValue &max(const VRPValue &lhs, const VRPValue &rhs) {
-    return lhs <= rhs ? rhs : lhs;
+
+  static llvm::Optional<VRPValue> max(const VRPValue &lhs,
+                                      const VRPValue &rhs) {
+    return lhs.cmpLE(rhs).map([&lhs, &rhs](bool le) { return le ? rhs : lhs; });
+  }
+
+  void print(raw_ostream &os) const {
+    if (isPInfinity()) {
+      os << "INF";
+    } else if (isMInfinity()) {
+      os << "-INF";
+    } else {
+      value.print(os);
+    }
   }
 };
 
@@ -78,7 +107,9 @@ class VRPLatticeEl {
   VRPRange<T> range;
 
 public:
-  bool validate() const { return range.first <= range.second; };
+  bool validate() const {
+    return range.first.cmpLE(range.second).getValueOr(false);
+  };
   VRPLatticeEl(VRPRange<T> r) : range(r) { assert(validate()); }
   VRPLatticeEl()
       : range(std::make_pair(VT::getMInfinity(), VT::getPInfinity())) {
@@ -99,16 +130,26 @@ public:
   }
   static VRPLatticeEl join(const VRPLatticeEl &lhs, const VRPLatticeEl &rhs) {
     return VRPLatticeEl(
-        std::make_pair(VT::min(lhs.range.first, rhs.range.second),
-                       VT::max(lhs.range.second, rhs.range.second)));
+        std::make_pair(VT::min(lhs.range.first, rhs.range.second)
+                           .getValueOr(VT::getMInfinity()),
+                       VT::max(lhs.range.second, rhs.range.second)
+                           .getValueOr(VT::getPInfinity())));
+  }
+
+  void print(raw_ostream &os) const {
+    os << "[";
+    range.first.print(os);
+    os << " ; ";
+    range.second.print(os);
+    os << "]";
   }
 };
 
 template <typename VRV>
-struct VRPAnalysis : public ForwardDataFlowAnalysis<VRPLatticeEl<VRV>> {
-  VRPAnalysis(mlir::MLIRContext *c)
+struct VRPAnalysisBase : public ForwardDataFlowAnalysis<VRPLatticeEl<VRV>> {
+  VRPAnalysisBase(mlir::MLIRContext *c)
       : ForwardDataFlowAnalysis<VRPLatticeEl<VRV>>(c) {}
-  ~VRPAnalysis() override = default;
+  ~VRPAnalysisBase() override = default;
 
   // Similar to Operation::fold, a client analysis must implement
   // a fold over VRPRange, describing the range of output
@@ -117,6 +158,7 @@ struct VRPAnalysis : public ForwardDataFlowAnalysis<VRPLatticeEl<VRV>> {
   virtual LogicalResult rangeFold(Operation *op,
                                   ArrayRef<VRPRange<VRV>> operands,
                                   SmallVectorImpl<VRPRange<VRV>> &results) = 0;
+  virtual void print(Operation *topLevelOp, raw_ostream &os);
 
 protected:
   ChangeResult
@@ -124,12 +166,20 @@ protected:
                  ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) final;
 };
 
-struct FloatRangeAnalysis : public VRPAnalysis<float> {
-  FloatRangeAnalysis(mlir::MLIRContext *c) : VRPAnalysis<float>(c) {}
-  LogicalResult rangeFold(Operation *op, ArrayRef<VRPRange<float>> operands,
-                          SmallVectorImpl<VRPRange<float>> &results) override;
+// mlir::Attribute with a comparison operator.
+struct VRPAttribute : public Attribute {
+  VRPAttribute(Attribute a) : Attribute(a) {}
+  llvm::Optional<bool> cmpLT(const Attribute &rhs) const;
+};
 
-  static void runOnOperation(Operation *op);
+/// Clients of this analysis can either use VRPAnalysis or extend
+///   VRPAttribute: To support comparison for more Attribute types.
+///   VRPAnalysis: To support more Operations.
+struct VRPAnalysis : public VRPAnalysisBase<VRPAttribute> {
+  VRPAnalysis(mlir::MLIRContext *c) : VRPAnalysisBase<VRPAttribute>(c) {}
+  LogicalResult
+  rangeFold(Operation *op, ArrayRef<VRPRange<VRPAttribute>> operands,
+            SmallVectorImpl<VRPRange<VRPAttribute>> &results) override;
 };
 
 } // namespace mlir
