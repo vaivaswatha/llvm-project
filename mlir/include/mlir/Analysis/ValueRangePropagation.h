@@ -46,6 +46,10 @@ public:
   VRPValue(const T &v) : infinityStatus(NotINF), value(v){};
   static VRPValue getPInfinity() { return VRPValue(PlusINF); }
   static VRPValue getMInfinity() { return VRPValue(MinusINF); }
+  T getValue() const {
+    assert(!isInfinity());
+    return value;
+  }
 
   bool isInfinity() const { return infinityStatus != NotINF; }
   bool isPInfinity() const { return infinityStatus == PlusINF; }
@@ -58,8 +62,7 @@ public:
   llvm::Optional<bool> cmpLT(const VRPValue &rhs) const {
     if ((isMInfinity() && rhs.isMInfinity()) ||
         (isPInfinity() && rhs.isPInfinity())) {
-      // Incomparable
-      return {};
+      return {false};
     }
     if ((isMInfinity() || rhs.isPInfinity())) {
       return {true};
@@ -73,7 +76,14 @@ public:
   }
 
   llvm::Optional<bool> cmpLE(const VRPValue &rhs) const {
-    return cmpLT(rhs).getValueOr(*this == rhs);
+    return cmpLT(rhs).map([this, &rhs](bool lt) { return lt || *this == rhs; });
+  };
+
+  llvm::Optional<bool> cmpGT(const VRPValue &rhs) const {
+    return cmpLE(rhs).map([](bool le) { return !le; });
+  };
+  llvm::Optional<bool> cmpGE(const VRPValue &rhs) const {
+    return cmpGT(rhs).map([this, &rhs](bool gt) { return gt || *this == rhs; });
   };
 
   static llvm::Optional<VRPValue> min(const VRPValue &lhs,
@@ -86,15 +96,8 @@ public:
     return lhs.cmpLE(rhs).map([&lhs, &rhs](bool le) { return le ? rhs : lhs; });
   }
 
-  void print(raw_ostream &os) const {
-    if (isPInfinity()) {
-      os << "INF";
-    } else if (isMInfinity()) {
-      os << "-INF";
-    } else {
-      value.print(os);
-    }
-  }
+  void print(raw_ostream &os) const;
+  void dump() const;
 };
 
 template <typename T>
@@ -130,19 +133,14 @@ public:
   }
   static VRPLatticeEl join(const VRPLatticeEl &lhs, const VRPLatticeEl &rhs) {
     return VRPLatticeEl(
-        std::make_pair(VT::min(lhs.range.first, rhs.range.second)
+        std::make_pair(VT::min(lhs.range.first, rhs.range.first)
                            .getValueOr(VT::getMInfinity()),
                        VT::max(lhs.range.second, rhs.range.second)
                            .getValueOr(VT::getPInfinity())));
   }
 
-  void print(raw_ostream &os) const {
-    os << "[";
-    range.first.print(os);
-    os << " ; ";
-    range.second.print(os);
-    os << "]";
-  }
+  void print(raw_ostream &os) const;
+  void dump() const;
 };
 
 template <typename VRV>
@@ -159,6 +157,7 @@ struct VRPAnalysisBase : public ForwardDataFlowAnalysis<VRPLatticeEl<VRV>> {
                                   ArrayRef<VRPRange<VRV>> operands,
                                   SmallVectorImpl<VRPRange<VRV>> &results) = 0;
   virtual void print(Operation *topLevelOp, raw_ostream &os);
+  void dump() const;
 
 protected:
   ChangeResult

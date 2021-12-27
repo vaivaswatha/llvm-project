@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/ValueRangePropagation.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -23,6 +24,36 @@
 #include <utility>
 
 namespace mlir {
+
+template <typename T>
+void VRPValue<T>::print(raw_ostream &os) const {
+  if (isPInfinity()) {
+    os << "INF";
+  } else if (isMInfinity()) {
+    os << "-INF";
+  } else {
+    value.print(os);
+  }
+}
+
+template <typename T>
+void VRPValue<T>::dump() const {
+  print(llvm::errs());
+}
+
+template <typename T>
+void VRPLatticeEl<T>::print(raw_ostream &os) const {
+  os << "[";
+  range.first.print(os);
+  os << " ; ";
+  range.second.print(os);
+  os << "]";
+}
+
+template <typename T>
+void VRPLatticeEl<T>::dump() const {
+  print(llvm::errs());
+}
 
 template <typename VRV>
 ChangeResult VRPAnalysisBase<VRV>::visitOperation(
@@ -70,6 +101,11 @@ void VRPAnalysisBase<VRV>::print(Operation *topLevelOp, raw_ostream &os) {
   });
 }
 
+template <typename T>
+void VRPAnalysisBase<T>::dump() const {
+  print(llvm::errs());
+}
+
 llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
   Type thisType = getType();
   Type rhsType = rhs.getType();
@@ -91,17 +127,56 @@ llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
   return {};
 }
 
-LogicalResult
-VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPRange<VRPAttribute>> operands,
-                       SmallVectorImpl<VRPRange<VRPAttribute>> &results) {
+using VRPV = VRPValue<VRPAttribute>;
+using VRPR = VRPRange<VRPAttribute>;
 
-  if (isa<math::AbsOp>(op)) {
-    VRPValue<VRPAttribute> lb(FloatAttr::get(op->getResultTypes()[0], 0.0));
-    VRPValue<VRPAttribute> ub(VRPValue<VRPAttribute>::getPInfinity());
-    VRPRange<VRPAttribute> resRange(lb, ub);
-    results.push_back(resRange);
+LogicalResult VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPR> operands,
+                                     SmallVectorImpl<VRPR> &results) {
+
+  assert(op->getNumOperands() == operands.size());
+
+  if (isa<arith::ConstantOp>(op)) {
+    results.push_back(VRPR(op->getAttr("value"), op->getAttr("value")));
     return success();
   }
+
+  if (isa<math::AbsOp>(op)) {
+    Type resType = op->getResultTypes()[0];
+    FloatAttr zeroFA = FloatAttr::get(resType, 0.0);
+    VRPV zeroVal(zeroFA);
+    auto abs = [&zeroFA, &resType](const VRPV &v) -> VRPV {
+      if (v.isInfinity()) {
+        return VRPV::getPInfinity();
+      }
+      FloatAttr vAttr = v.getValue().cast<FloatAttr>();
+      if (vAttr.getValue() < zeroFA.getValue()) {
+        APFloat vVal = vAttr.getValue();
+        vVal.changeSign();
+        return VRPV(FloatAttr::get(resType, vVal));
+      }
+      return v;
+    };
+    VRPV lbVal = operands[0].first;
+    VRPV ubVal = operands[0].second;
+    // In below operations, we assume that VRPV comparisons return Some result.
+    assert(*lbVal.cmpLE(ubVal));
+    if (*ubVal.cmpLE(zeroVal)) {
+      // ubVal <= 0.
+      // Take abs() and switch the bounds.
+      results.push_back(VRPR(abs(ubVal), abs(lbVal)));
+      return success();
+    }
+    if (*lbVal.cmpLE(zeroVal) && *ubVal.cmpGE(zeroVal)) {
+      // lbVal <= 0 <= ubVal.
+      // Result is 0 <= max(abs(lbVal), ubVal).
+      results.push_back(VRPR(zeroFA, *VRPV::max(abs(lbVal), ubVal)));
+      return success();
+    }
+    // 0 <= lbVal <= ubVal.
+    results.push_back(VRPR(lbVal, ubVal));
+    return success();
+  }
+
   return failure();
 }
 
