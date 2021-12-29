@@ -121,7 +121,8 @@ llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
       return cast<IntegerAttr>().getValue().slt(
           rhs.cast<IntegerAttr>().getValue());
     }
-    cast<IntegerAttr>().getValue().ult(rhs.cast<IntegerAttr>().getValue());
+    // TODO: What to do for signless?
+    return cast<IntegerAttr>().getValue().ult(rhs.cast<IntegerAttr>().getValue());
   }
   // Don't know
   return {};
@@ -130,6 +131,8 @@ llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
 using VRPV = VRPValue<VRPAttribute>;
 using VRPR = VRPRange<VRPAttribute>;
 
+// Given a range for each input operand, try to compute a range for the outputs.
+// Partial reference: https://en.wikipedia.org/wiki/Interval_arithmetic
 LogicalResult VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPR> operands,
                                      SmallVectorImpl<VRPR> &results) {
 
@@ -174,6 +177,33 @@ LogicalResult VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPR> operands,
     }
     // 0 <= lbVal <= ubVal.
     results.push_back(VRPR(lbVal, ubVal));
+    return success();
+  }
+
+  if (isa<arith::AddFOp>(op) || isa<arith::AddIOp>(op)) {
+    // [lb1; ub1] + [lb2; ub2] = [lb1+lb2; ub1+ub2]
+    VRPV lb1Val = operands[0].first;
+    VRPV ub1Val = operands[0].second;
+    VRPV lb2Val = operands[1].first;
+    VRPV ub2Val = operands[1].second;
+    Type resType = op->getResultTypes()[0];
+    auto attrAdd = [](Type ty, VRPV opd1, VRPV opd2) {
+      assert(ty.isa<FloatType>() || ty.isa<IntegerType>());
+      return ty.isa<FloatType>()
+                 ? VRPV(FloatAttr::get(
+                       ty, opd1.getValue().cast<FloatAttr>().getValue() +
+                               opd2.getValue().cast<FloatAttr>().getValue()))
+                 : VRPV(IntegerAttr::get(
+                       ty, opd1.getValue().cast<IntegerAttr>().getValue() +
+                               opd2.getValue().cast<IntegerAttr>().getValue()));
+    };
+    VRPV lbResVal = (lb1Val.isInfinity() || lb2Val.isInfinity())
+                        ? VRPV::getMInfinity()
+                        : attrAdd(resType, lb1Val, lb2Val);
+    VRPV ubResVal = (ub1Val.isInfinity() || ub2Val.isInfinity())
+                        ? VRPV::getPInfinity()
+                        : attrAdd(resType, ub1Val, ub2Val);
+    results.push_back(VRPR(lbResVal, ubResVal));
     return success();
   }
 
