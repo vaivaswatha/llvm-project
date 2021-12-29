@@ -58,6 +58,9 @@ public:
   bool operator==(const VRPValue &rhs) const {
     return infinityStatus == rhs.infinityStatus && value == rhs.value;
   }
+  bool operator!=(const VRPValue &rhs) const {
+    return !operator==(rhs);
+  }
 
   llvm::Optional<bool> cmpLT(const VRPValue &rhs) const {
     if ((isMInfinity() && rhs.isMInfinity()) ||
@@ -163,6 +166,9 @@ protected:
   ChangeResult
   visitOperation(Operation *op,
                  ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) final;
+
+private:
+  DenseSet<Operation *> visited;
 };
 
 // mlir::Attribute with a comparison operator.

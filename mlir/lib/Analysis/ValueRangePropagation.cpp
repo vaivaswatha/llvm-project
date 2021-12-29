@@ -59,13 +59,16 @@ template <typename VRV>
 ChangeResult VRPAnalysisBase<VRV>::visitOperation(
     Operation *op, ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) {
 
-  SmallVector<VRPRange<VRV>> opdsRange(
+  using VRPV = VRPValue<VRV>;
+  using VRPR = VRPRange<VRV>;
+  SmallVector<VRPR> opdsRange(
       llvm::map_range(operands, [](LatticeElement<VRPLatticeEl<VRV>> *value) {
         return value->getValue().getRange();
       }));
 
-  SmallVector<VRPRange<VRV>> foldResults;
+  SmallVector<VRPR> foldResults;
   if (failed(rangeFold(op, opdsRange, foldResults))) {
+    visited.insert(op);
     return this->markAllPessimisticFixpoint(op->getResults());
   }
 
@@ -76,13 +79,21 @@ ChangeResult VRPAnalysisBase<VRV>::visitOperation(
     LatticeElement<VRPLatticeEl<VRV>> &lattice =
         this->getLatticeElement(op->getResult(i));
 
-    // The VRP lattice doesn't satisfy chain condition.
-    // Need to break it by check if an Operation was previously
-    // visited and if it has widened since then.
-    // If so, then push it to <-INF, INF>. TODO.
-
+    // The VRP lattice doesn't satisfy the ascending chain condition.
+    // So we need to break it by checking if an Operation was previously
+    // visited and whether it has widened since then.
+    if (false && visited.contains(op)) {
+      VRPR prevResult = lattice.getValue().getRange();
+      if (foldResults[i].first.cmpLT(prevResult.first).getValueOr(true)) {
+        foldResults[i].first = VRPV::getMInfinity();
+      }
+      if (foldResults[i].second.cmpGT(prevResult.second).getValueOr(true)) {
+        foldResults[i].second = VRPV::getPInfinity();
+      }
+    }
     result |= lattice.join(foldResults[i]);
   }
+  visited.insert(op);
   return result;
 }
 
@@ -122,7 +133,8 @@ llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
           rhs.cast<IntegerAttr>().getValue());
     }
     // TODO: What to do for signless?
-    return cast<IntegerAttr>().getValue().ult(rhs.cast<IntegerAttr>().getValue());
+    return cast<IntegerAttr>().getValue().ult(
+        rhs.cast<IntegerAttr>().getValue());
   }
   // Don't know
   return {};
@@ -187,23 +199,70 @@ LogicalResult VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPR> operands,
     VRPV lb2Val = operands[1].first;
     VRPV ub2Val = operands[1].second;
     Type resType = op->getResultTypes()[0];
-    auto attrAdd = [](Type ty, VRPV opd1, VRPV opd2) {
-      assert(ty.isa<FloatType>() || ty.isa<IntegerType>());
-      return ty.isa<FloatType>()
+    auto attrAdd = [&resType](VRPV opd1, VRPV opd2) {
+      assert(resType.isa<FloatType>() || resType.isa<IntegerType>());
+      return resType.isa<FloatType>()
                  ? VRPV(FloatAttr::get(
-                       ty, opd1.getValue().cast<FloatAttr>().getValue() +
-                               opd2.getValue().cast<FloatAttr>().getValue()))
+                       resType,
+                       opd1.getValue().cast<FloatAttr>().getValue() +
+                           opd2.getValue().cast<FloatAttr>().getValue()))
                  : VRPV(IntegerAttr::get(
-                       ty, opd1.getValue().cast<IntegerAttr>().getValue() +
-                               opd2.getValue().cast<IntegerAttr>().getValue()));
+                       resType,
+                       opd1.getValue().cast<IntegerAttr>().getValue() +
+                           opd2.getValue().cast<IntegerAttr>().getValue()));
     };
     VRPV lbResVal = (lb1Val.isInfinity() || lb2Val.isInfinity())
                         ? VRPV::getMInfinity()
-                        : attrAdd(resType, lb1Val, lb2Val);
+                        : attrAdd(lb1Val, lb2Val);
     VRPV ubResVal = (ub1Val.isInfinity() || ub2Val.isInfinity())
                         ? VRPV::getPInfinity()
-                        : attrAdd(resType, ub1Val, ub2Val);
+                        : attrAdd(ub1Val, ub2Val);
     results.push_back(VRPR(lbResVal, ubResVal));
+    return success();
+  }
+
+  if (isa<arith::MulFOp>(op) || isa<arith::MulIOp>(op)) {
+    // [lb1; ub1] * [lb2; ub2] =
+    // [
+    //   min(lb1*lb2, lb1*ub2, ub1*lb2, ub1*ub2);
+    //   max(lb1*lb2, lb1*ub2, ub1*lb2, ub1*ub2)
+    // ]
+    VRPV lb1Val = operands[0].first;
+    VRPV ub1Val = operands[0].second;
+    VRPV lb2Val = operands[1].first;
+    VRPV ub2Val = operands[1].second;
+    Type resType = op->getResultTypes()[0];
+    auto attrMul = [&resType](VRPV opd1, VRPV opd2) {
+      assert(resType.isa<FloatType>() || resType.isa<IntegerType>());
+      return resType.isa<FloatType>()
+                 ? VRPV(FloatAttr::get(
+                       resType,
+                       opd1.getValue().cast<FloatAttr>().getValue() *
+                           opd2.getValue().cast<FloatAttr>().getValue()))
+                 : VRPV(IntegerAttr::get(
+                       resType,
+                       opd1.getValue().cast<IntegerAttr>().getValue() *
+                           opd2.getValue().cast<IntegerAttr>().getValue()));
+    };
+    if (lb1Val.isInfinity() || lb2Val.isInfinity() || ub1Val.isInfinity() ||
+        ub2Val.isInfinity()) {
+      results.push_back(VRPR(VRPV::getMInfinity(), VRPV::getPInfinity()));
+      return success();
+    }
+    auto min4 = [](VRPV opd1, VRPV opd2, VRPV opd3, VRPV opd4) {
+      VRPV min1 = *opd1.cmpLT(opd2) ? opd1 : opd2;
+      VRPV min2 = *opd3.cmpLT(opd4) ? opd3 : opd4;
+      return *min1.cmpLT(min2) ? min1 : min2;
+    };
+    auto max4 = [](VRPV opd1, VRPV opd2, VRPV opd3, VRPV opd4) {
+      VRPV min1 = *opd1.cmpLT(opd2) ? opd2 : opd1;
+      VRPV min2 = *opd3.cmpLT(opd4) ? opd4 : opd3;
+      return *min1.cmpLT(min2) ? min2 : min1;
+    };
+    VRPV prods[] = {attrMul(lb1Val, lb2Val), attrMul(lb1Val, ub2Val),
+                    attrMul(ub1Val, lb2Val), attrMul(ub1Val, ub2Val)};
+    results.push_back(VRPR(min4(prods[0], prods[1], prods[2], prods[3]),
+                           max4(prods[0], prods[1], prods[2], prods[3])));
     return success();
   }
 

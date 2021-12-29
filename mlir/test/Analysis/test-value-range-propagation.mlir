@@ -57,10 +57,59 @@ func @add3(%arg0 : i1, %arg3 : f32) -> f32 {
 
 ^bb2 (%arg1 : f32, %arg2 : f32):
   %h = arith.addf %arg1, %arg2 : f32
-  // CHECK: %2 = arith.addf %0, %1 : f32 : [-3.000000e+00 : f32 ; 5.000000e+00 : f32]
+  // CHECK: %3 = arith.addf %1, %2 : f32 : [-3.000000e+00 : f32 ; 5.000000e+00 : f32]
   %i = arith.addf %arg1, %arg3_abs : f32
   // CHECK %4 = arith.addf %1, %0 : f32 : [-1.000000e+00 : f32 ; INF]
   %j = arith.addf %h, %i : f32
   // CHECK %5 = arith.addf %3, %4 : f32 : [-4.000000e+00 : f32 ; INF]
   return %j : f32
+}
+
+func @mul1() -> f32 {
+  %f = arith.constant -1.0 : f32
+  %g = arith.constant 2.0 : f32
+  %h = arith.mulf %f, %g : f32
+  // CHECK: %0 = arith.mulf %cst, %cst_0 : f32 : [-2.000000e+00 : f32 ; -2.000000e+00 : f32]
+  return %h : f32
+}
+
+func @mul2() -> i32 {
+  %f = arith.constant -1 : i32
+  %g = arith.constant 2 : i32
+  %h = arith.muli %f, %g : i32
+  // CHECK: %0 = arith.muli %c-1_i32, %c2_i32 : i32 : [-2 : i32 ; -2 : i32]
+  return %h : i32
+}
+
+func @mul3(%arg0 : i1, %arg3 : f32) -> f32 {
+  %arg3_abs = math.abs %arg3 : f32
+  cond_br %arg0, ^bb0, ^bb1
+
+^bb0:
+  %f1 = arith.constant -1.0 : f32
+  %f2 = arith.constant -2.0 : f32
+  br ^bb2 (%f1,  %f2 : f32, f32)
+
+^bb1:
+  %g1 = arith.constant 2.0 : f32
+  %g2 = arith.constant 3.0 : f32
+  br ^bb2 (%g1, %g2 : f32, f32)
+
+^bb2 (%arg1 : f32, %arg2 : f32):
+  %h = arith.mulf %arg1, %arg2 : f32
+  // CHECK: %3 = arith.mulf %1, %2 : f32 : [-4.000000e+00 : f32 ; 6.000000e+00 : f32]
+  %i = arith.mulf %arg1, %arg3_abs : f32
+  // CHECK: %4 = arith.mulf %1, %0 : f32 : [-INF ; INF]
+  %j = arith.mulf %h, %i : f32
+  // CHECK: %5 = arith.mulf %3, %4 : f32 : [-INF ; INF]
+  return %j : f32
+}
+
+func @mul4(%arg0 : i1) -> f32 {
+  %two = arith.constant 2.0 : f32
+  br ^bb0 (%two : f32)
+
+^bb0 (%arg1 : f32):
+  %h = arith.mulf %arg1, %two : f32
+  br ^bb0 (%h : f32)
 }
