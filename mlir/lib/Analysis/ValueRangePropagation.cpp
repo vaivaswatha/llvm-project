@@ -80,8 +80,9 @@ ChangeResult VRPAnalysisBase<VRV>::visitOperation(
         this->getLatticeElement(op->getResult(i));
 
     // The VRP lattice doesn't satisfy the ascending chain condition.
-    // So we need to break it by checking if an Operation was previously
-    // visited and whether it has widened since then.
+    // So we need a widening operator.
+    // See "Static Determination of Dynamic Properties of Programs"
+    // - Cousot & Cousot
     if (false && visited.contains(op)) {
       VRPR prevResult = lattice.getValue().getRange();
       if (foldResults[i].first.cmpLT(prevResult.first).getValueOr(true)) {
