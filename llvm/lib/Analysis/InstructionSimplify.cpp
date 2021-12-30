@@ -2173,6 +2173,15 @@ static Value *SimplifyAndInst(Value *Op0, Value *Op1, const SimplifyQuery &Q,
     }
   }
 
+  // ((X | Y) ^ X ) & ((X | Y) ^ Y) --> 0
+  // ((X | Y) ^ Y ) & ((X | Y) ^ X) --> 0
+  BinaryOperator *Or;
+  if (match(Op0, m_c_Xor(m_Value(X),
+                         m_CombineAnd(m_BinOp(Or),
+                                      m_c_Or(m_Deferred(X), m_Value(Y))))) &&
+      match(Op1, m_c_Xor(m_Specific(Or), m_Specific(Y))))
+    return Constant::getNullValue(Op0->getType());
+
   return nullptr;
 }
 
@@ -2881,7 +2890,8 @@ static Value *simplifyICmpWithConstant(CmpInst::Predicate Pred, Value *LHS,
   if (RHS_CR.isFullSet())
     return ConstantInt::getTrue(ITy);
 
-  ConstantRange LHS_CR = computeConstantRange(LHS, IIQ.UseInstrInfo);
+  ConstantRange LHS_CR =
+      computeConstantRange(LHS, CmpInst::isSigned(Pred), IIQ.UseInstrInfo);
   if (!LHS_CR.isFullSet()) {
     if (RHS_CR.contains(LHS_CR))
       return ConstantInt::getTrue(ITy);

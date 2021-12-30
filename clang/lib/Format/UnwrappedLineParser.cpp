@@ -1138,7 +1138,6 @@ void UnwrappedLineParser::parseModuleImport() {
   }
 
   addUnwrappedLine();
-  return;
 }
 
 // readTokenWithJavaScriptASI reads the next token and terminates the current
@@ -1439,7 +1438,7 @@ void UnwrappedLineParser::parseStructuralElement(bool IsTopLevel) {
       return;
     case tok::kw_requires:
       parseRequires();
-      break;
+      return;
     case tok::kw_enum:
       // Ignore if this is part of "template <enum ...".
       if (Previous && Previous->is(tok::less)) {
