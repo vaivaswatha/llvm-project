@@ -18,7 +18,28 @@
 using namespace mlir;
 
 //===----------------------------------------------------------------------===//
+// Value range analysis attempts to compute the range of concrete values
+// that every abstract value (i.e., mlir::Value) can take at runtime.
+// The analysis does not make assumptions about the type of values.
 //
+// To accommodate the possibility of a range being extended till infinity,
+// we wrap mlir::Attribute with VRPValue that accommodates -INF and INF and
+// provides useful operations over it.
+//
+// The analysis itself is a wrapper around DataFlowAnalysis, with the key
+// element being a widening operator (VRPAnalysisBase::visitOperation).
+//
+// While the analysis provides useful results for some known types and
+// operations, clients can extend this by:
+//   1. Specializing VRPValue with suitable operators provided.
+//   2. Extending VRPAnalysis by providing the data-flow analysis
+//      transfer functions for any Operation required. The transfer
+//      function describes how the operation, given its input operand
+//      value ranges, produces the output value ranges.
+//
+// In some sense, this analysis is a generalization of constant propagation,
+// considering that an inference that a value is a constant C can be considered
+// as the value being in the range <C, C>.
 //===----------------------------------------------------------------------===//
 
 namespace mlir {
