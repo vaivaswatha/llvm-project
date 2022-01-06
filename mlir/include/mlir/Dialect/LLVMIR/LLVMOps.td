@@ -327,6 +327,7 @@ def LLVM_GEPOp
   let assemblyFormat = [{
     $base `[` $indices `]` attr-dict `:` functional-type(operands, results)
   }];
+  let hasFolder = 1;
 }
 
 def LLVM_LoadOp : LLVM_Op<"load">, MemoryOpWithAlignmentAndAttributes {
@@ -398,10 +399,14 @@ class LLVM_CastOp<string mnemonic, string builderFunc, Type type,
   let printer = [{ mlir::impl::printCastOp(this->getOperation(), p); }];
 }
 def LLVM_BitcastOp : LLVM_CastOp<"bitcast", "CreateBitCast",
-                                 LLVM_AnyNonAggregate, LLVM_AnyNonAggregate>;
+                                 LLVM_AnyNonAggregate, LLVM_AnyNonAggregate> {
+  let hasFolder = 1;
+}
 def LLVM_AddrSpaceCastOp : LLVM_CastOp<"addrspacecast", "CreateAddrSpaceCast",
                                        LLVM_ScalarOrVectorOf<LLVM_AnyPointer>,
-                                       LLVM_ScalarOrVectorOf<LLVM_AnyPointer>>;
+                                       LLVM_ScalarOrVectorOf<LLVM_AnyPointer>> {
+  let hasFolder = 1;
+}
 def LLVM_IntToPtrOp : LLVM_CastOp<"inttoptr", "CreateIntToPtr",
                                   LLVM_ScalarOrVectorOf<AnyInteger>,
                                   LLVM_ScalarOrVectorOf<LLVM_AnyPointer>>;
@@ -1540,6 +1545,15 @@ def LLVM_CoroFreeOp : LLVM_IntrOp<"coro.free", [], [], [], 1> {
 def LLVM_CoroResumeOp : LLVM_IntrOp<"coro.resume", [], [], [], 0> {
   let arguments = (ins LLVM_i8Ptr:$handle);
   let assemblyFormat = "$handle attr-dict";
+}
+
+//
+// Exception handling intrinsics.
+//
+
+def LLVM_EhTypeidForOp : LLVM_OneResultIntrOp<"eh.typeid.for"> {
+    let arguments = (ins LLVM_i8Ptr:$type_info);
+    let assemblyFormat = "$type_info attr-dict `:` type($res)";
 }
 
 //

@@ -870,6 +870,17 @@ void mapped_file_region::unmapImpl() {
     ::munmap(Mapping, Size);
 }
 
+void mapped_file_region::dontNeedImpl() {
+  assert(Mode == mapped_file_region::readonly);
+#if defined(__MVS__) || defined(_AIX)
+  // If we don't have madvise, or it isn't beneficial, treat this as a no-op.
+  return;
+#else
+  if (Mapping)
+    ::madvise(Mapping, Size, MADV_DONTNEED);
+#endif
+}
+
 int mapped_file_region::alignment() {
   return Process::getPageSizeEstimate();
 }

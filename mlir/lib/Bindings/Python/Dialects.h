@@ -15,8 +15,10 @@ namespace mlir {
 namespace python {
 
 void populateDialectLinalgSubmodule(pybind11::module m);
-void populateDialectSparseTensorSubmodule(pybind11::module m,
+void populateDialectSparseTensorSubmodule(const pybind11::module &m,
                                           const pybind11::module &irModule);
+void populateDialectQuantSubmodule(const pybind11::module &m,
+                                   const pybind11::module &irModule);
 
 } // namespace python
 } // namespace mlir
