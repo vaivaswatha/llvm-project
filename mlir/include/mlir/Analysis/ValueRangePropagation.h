@@ -1,4 +1,4 @@
-//===- VRP.cpp - Value Range Analysis -----------------===//
+//===- ValueRangePropagation.cpp - Value Range Analysis -------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -166,9 +166,6 @@ protected:
   ChangeResult
   visitOperation(Operation *op,
                  ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) final;
-
-private:
-  DenseSet<Operation *> visited;
 };
 
 // mlir::Attribute with a comparison operator.

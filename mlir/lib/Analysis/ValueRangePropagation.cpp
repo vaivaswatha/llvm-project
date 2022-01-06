@@ -1,4 +1,4 @@
-//===- ValueRangeAnalysis.cpp - Value Range Analysis ----------------------===//
+//===- ValueRangePropagation.cpp - Value Range Analysis -------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -68,7 +68,6 @@ ChangeResult VRPAnalysisBase<VRV>::visitOperation(
 
   SmallVector<VRPR> foldResults;
   if (failed(rangeFold(op, opdsRange, foldResults))) {
-    visited.insert(op);
     return this->markAllPessimisticFixpoint(op->getResults());
   }
 
@@ -83,7 +82,7 @@ ChangeResult VRPAnalysisBase<VRV>::visitOperation(
     // So we need a widening operator.
     // See "Static Determination of Dynamic Properties of Programs"
     // - Cousot & Cousot
-    if (false && visited.contains(op)) {
+    if (!lattice.isUninitialized()) {
       VRPR prevResult = lattice.getValue().getRange();
       if (foldResults[i].first.cmpLT(prevResult.first).getValueOr(true)) {
         foldResults[i].first = VRPV::getMInfinity();
@@ -94,7 +93,6 @@ ChangeResult VRPAnalysisBase<VRV>::visitOperation(
     }
     result |= lattice.join(foldResults[i]);
   }
-  visited.insert(op);
   return result;
 }
 

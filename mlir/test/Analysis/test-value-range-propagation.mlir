@@ -113,6 +113,6 @@ func @mul4(%arg0 : i1) -> f32 {
 
 ^bb0 (%arg1 : f32):
   %h = arith.mulf %arg1, %two : f32
-  // CHECK_DISABLED: %1 = arith.mulf %0, %cst : f32 : [-INF ; INF]
+  // CHECK: %1 = arith.mulf %0, %cst : f32 : [-INF ; INF]
   br ^bb0 (%h : f32)
 }
