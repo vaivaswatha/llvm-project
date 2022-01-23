@@ -21,69 +21,56 @@ using namespace mlir;
 // Value range analysis attempts to compute the range of concrete values
 // that every abstract value (i.e., mlir::Value) can take at runtime.
 // The analysis does not make assumptions about the type of values.
-//
-// To accommodate the possibility of a range being extended till infinity,
-// we wrap mlir::Attribute with VRPValue that accommodates -INF and INF and
-// provides useful operations over it.
-//
 // The analysis itself is a wrapper around DataFlowAnalysis, with the key
-// element being a widening operator (VRPAnalysisBase::visitOperation).
+// trick for convergence being a widening operator, defined in
+// VRPAnalysisBase::visitOperation.
 //
-// While the analysis provides useful results for some known types and
-// operations, clients can extend this by:
-//   1. Specializing VRPValue with suitable operators provided.
-//   2. Extending VRPAnalysis by providing the data-flow analysis
-//      transfer functions for any Operation required. The transfer
-//      function describes how the operation, given its input operand
-//      value ranges, produces the output value ranges.
+// How to use:
+//   VRPAnalysis<VRPImplBase> provides useful results over some standard
+//   operations and types.
+//   Clients that want precision over more operations and types must extend
+//   VRPImplBase and define comparison operations for the types and transfer
+//   functions (rangeFold) for the operations. VRPAnalysis can then be
+//   instantiated with this extension.
 //
-// In some sense, this analysis is a generalization of constant propagation,
-// considering that an inference that a value is a constant C can be considered
-// as the value being in the range <C, C>.
 //===----------------------------------------------------------------------===//
 
 namespace mlir {
 
-// We compute a range <VRPValue, VRPValue> for each mlir::Value.
-// The type parameter T must have the following methods defined:
-//   llvm::Optional<bool> cmpLT(const T &rhs) const
-//   static bool operator==(const T &lhs, const T &rhs)
-//   void print(raw_ostream &os) const;
-// The compare less-than function (cmpLT) returns None when
-// the the values are not comparable.
-template <typename T>
-class VRPValue {
+// Extention of Attribute with possibly +INF/-INF values.
+// Type parameter AttrCmp must implement
+//     static llvm::Optional<bool>
+//       AttrCmp::cmpLT(const Attribute &lhs, const Attribute &rhs);
+template <typename AttrCmp>
+class VRPAttribute : public Attribute {
 
   enum InfinityStatus {
     NotINF,   // Not infinity
     PlusINF,  // +INF
     MinusINF, // -INF
   } infinityStatus;
-  T value;
 
-  VRPValue(InfinityStatus is) : infinityStatus(is), value({}){};
+  VRPAttribute(InfinityStatus is) : infinityStatus(is){};
 
 public:
-  VRPValue(const T &v) : infinityStatus(NotINF), value(v){};
-  static VRPValue getPInfinity() { return VRPValue(PlusINF); }
-  static VRPValue getMInfinity() { return VRPValue(MinusINF); }
-  T getValue() const {
+  VRPAttribute(const Attribute &v) : Attribute(v), infinityStatus(NotINF){};
+  static VRPAttribute getPInfinity() { return VRPAttribute(PlusINF); }
+  static VRPAttribute getMInfinity() { return VRPAttribute(MinusINF); }
+  Attribute getValue() const {
     assert(!isInfinity());
-    return value;
+    return static_cast<Attribute>(*this);
   }
 
   bool isInfinity() const { return infinityStatus != NotINF; }
   bool isPInfinity() const { return infinityStatus == PlusINF; }
   bool isMInfinity() const { return infinityStatus == MinusINF; }
 
-  bool operator==(const VRPValue &rhs) const {
-    return infinityStatus == rhs.infinityStatus && value == rhs.value;
+  bool operator==(const VRPAttribute &rhs) const {
+    return infinityStatus == rhs.infinityStatus && Attribute::operator==(rhs);
   }
-  bool operator!=(const VRPValue &rhs) const {
-    return !operator==(rhs);
-  }
+  bool operator!=(const VRPAttribute &rhs) const { return !operator==(rhs); }
 
-  llvm::Optional<bool> cmpLT(const VRPValue &rhs) const {
+  llvm::Optional<bool> cmpLT(const VRPAttribute &rhs) const {
     if ((isMInfinity() && rhs.isMInfinity()) ||
         (isPInfinity() && rhs.isPInfinity())) {
       return {false};
@@ -96,53 +83,61 @@ public:
 
     assert(!isInfinity() && !rhs.isInfinity());
 
-    return value.cmpLT(rhs.value);
+    return AttrCmp::cmpLT(*this, rhs);
   }
 
-  llvm::Optional<bool> cmpLE(const VRPValue &rhs) const {
+  llvm::Optional<bool> cmpLE(const VRPAttribute &rhs) const {
     return cmpLT(rhs).map([this, &rhs](bool lt) { return lt || *this == rhs; });
   };
 
-  llvm::Optional<bool> cmpGT(const VRPValue &rhs) const {
+  llvm::Optional<bool> cmpGT(const VRPAttribute &rhs) const {
     return cmpLE(rhs).map([](bool le) { return !le; });
   };
-  llvm::Optional<bool> cmpGE(const VRPValue &rhs) const {
+  llvm::Optional<bool> cmpGE(const VRPAttribute &rhs) const {
     return cmpGT(rhs).map([this, &rhs](bool gt) { return gt || *this == rhs; });
   };
 
-  static llvm::Optional<VRPValue> min(const VRPValue &lhs,
-                                      const VRPValue &rhs) {
+  static llvm::Optional<VRPAttribute> min(const VRPAttribute &lhs,
+                                          const VRPAttribute &rhs) {
     return lhs.cmpLE(rhs).map([&lhs, &rhs](bool le) { return le ? lhs : rhs; });
   }
 
-  static llvm::Optional<VRPValue> max(const VRPValue &lhs,
-                                      const VRPValue &rhs) {
+  static llvm::Optional<VRPAttribute> max(const VRPAttribute &lhs,
+                                          const VRPAttribute &rhs) {
     return lhs.cmpLE(rhs).map([&lhs, &rhs](bool le) { return le ? rhs : lhs; });
   }
 
-  void print(raw_ostream &os) const;
-  void dump() const;
+  void print(raw_ostream &os) const {
+    if (isPInfinity()) {
+      os << "INF";
+    } else if (isMInfinity()) {
+      os << "-INF";
+    } else {
+      Attribute::print(os);
+    }
+  };
+  void dump() const { print(llvm::errs()); };
 };
 
-template <typename T>
-using VRPRange = std::pair<VRPValue<T>, VRPValue<T>>;
+template <typename AttrCmp>
+using VRPRange = std::pair<VRPAttribute<AttrCmp>, VRPAttribute<AttrCmp>>;
 
 // mlir::LatticeElement for the data-flow analysis.
-template <typename T>
+template <typename AttrCmp>
 class VRPLatticeEl {
-  using VT = VRPValue<T>;
-  VRPRange<T> range;
+  using VT = VRPAttribute<AttrCmp>;
+  VRPRange<AttrCmp> range;
 
 public:
   bool validate() const {
     return range.first.cmpLE(range.second).getValueOr(false);
   };
-  VRPLatticeEl(VRPRange<T> r) : range(r) { assert(validate()); }
+  VRPLatticeEl(VRPRange<AttrCmp> r) : range(r) { assert(validate()); }
   VRPLatticeEl()
       : range(std::make_pair(VT::getMInfinity(), VT::getPInfinity())) {
     assert(validate());
   }
-  VRPRange<T> getRange() const { return range; }
+  VRPRange<AttrCmp> getRange() const { return range; }
 
   /// Satisfying the interface for LatticeElement
 
@@ -163,46 +158,100 @@ public:
                            .getValueOr(VT::getPInfinity())));
   }
 
-  void print(raw_ostream &os) const;
-  void dump() const;
+  void print(raw_ostream &os) const {
+    os << "[";
+    range.first.print(os);
+    os << " ; ";
+    range.second.print(os);
+    os << "]";
+  }
+  void dump() const { print(llvm::errs()); };
 };
 
-template <typename VRV>
-struct VRPAnalysisBase : public ForwardDataFlowAnalysis<VRPLatticeEl<VRV>> {
-  VRPAnalysisBase(mlir::MLIRContext *c)
-      : ForwardDataFlowAnalysis<VRPLatticeEl<VRV>>(c) {}
-  ~VRPAnalysisBase() override = default;
+// The analyis must be instantiated with a class that defines:
+// 1. A comparison operator over Attributes.
+//     static llvm::Optional<bool>
+//       AttrCmp::cmpLT(const Attribute &lhs, const Attribute &rhs);
+// 2. Similar to operation::fold, this implements a fold over VRPRange,
+//    describing the range of output values, given the ranges for each
+//    input operand. failure() can be returned if nothing useful could
+//    be computed.
+//      static LogicalResult
+//        rangeFold(Operation *op, ArrayRef<VRPRange<AttrCmpRangeFold>>
+//          operands, SmallVectorImpl<VRPRange<AttrCmpRangeFold>> &results);
+template <typename AttrCmpRangeFold>
+struct VRPAnalysis
+    : public ForwardDataFlowAnalysis<VRPLatticeEl<AttrCmpRangeFold>> {
+  VRPAnalysis(mlir::MLIRContext *c)
+      : ForwardDataFlowAnalysis<VRPLatticeEl<AttrCmpRangeFold>>(c) {}
+  ~VRPAnalysis() override = default;
 
-  // Similar to Operation::fold, a client analysis must implement
-  // a fold over VRPRange, describing the range of output
-  // values, given the ranges for each input operand.
-  // failure() can be returned if nothing useful could be computed.
-  virtual LogicalResult rangeFold(Operation *op,
-                                  ArrayRef<VRPRange<VRV>> operands,
-                                  SmallVectorImpl<VRPRange<VRV>> &results) = 0;
-  virtual void print(Operation *topLevelOp, raw_ostream &os);
-  void dump() const;
+  void print(Operation *topLevelOp, raw_ostream &os) {
+    topLevelOp->walk([&os, this](mlir::Operation *op) {
+      for (Value result : op->getOpResults()) {
+        LatticeElement<VRPLatticeEl<AttrCmpRangeFold>> *lattice =
+            this->lookupLatticeElement(result);
+        if (lattice && !lattice->isUninitialized()) {
+          os << result << " : ";
+          lattice->getValue().print(os);
+          os << "\n";
+        }
+      }
+    });
+  }
+  void dump() const { print(llvm::errs()); };
 
 protected:
   ChangeResult
   visitOperation(Operation *op,
-                 ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) final;
+                 ArrayRef<LatticeElement<VRPLatticeEl<AttrCmpRangeFold>> *>
+                     operands) final {
+    using VRPV = VRPAttribute<AttrCmpRangeFold>;
+    using VRPR = VRPRange<AttrCmpRangeFold>;
+    SmallVector<VRPR> opdsRange(llvm::map_range(
+        operands, [](LatticeElement<VRPLatticeEl<AttrCmpRangeFold>> *value) {
+          return value->getValue().getRange();
+        }));
+
+    SmallVector<VRPR> foldResults;
+    if (failed(AttrCmpRangeFold::rangeFold(op, opdsRange, foldResults))) {
+      return this->markAllPessimisticFixpoint(op->getResults());
+    }
+
+    // Merge the fold results into the lattice for this operation.
+    assert(foldResults.size() == op->getNumResults() && "invalid result size");
+    ChangeResult result = ChangeResult::NoChange;
+    for (unsigned i = 0, e = foldResults.size(); i != e; ++i) {
+      LatticeElement<VRPLatticeEl<AttrCmpRangeFold>> &lattice =
+          this->getLatticeElement(op->getResult(i));
+
+      // The VRP lattice doesn't satisfy the ascending chain condition.
+      // So we need a widening operator.
+      // See "Static Determination of Dynamic Properties of Programs"
+      // - Cousot & Cousot
+      if (!lattice.isUninitialized()) {
+        VRPR prevResult = lattice.getValue().getRange();
+        if (foldResults[i].first.cmpLT(prevResult.first).getValueOr(true)) {
+          foldResults[i].first = VRPV::getMInfinity();
+        }
+        if (foldResults[i].second.cmpGT(prevResult.second).getValueOr(true)) {
+          foldResults[i].second = VRPV::getPInfinity();
+        }
+      }
+      result |= lattice.join(foldResults[i]);
+    }
+    return result;
+  }
 };
 
-// mlir::Attribute with a comparison operator.
-struct VRPAttribute : public Attribute {
-  VRPAttribute(Attribute a) : Attribute(a) {}
-  llvm::Optional<bool> cmpLT(const Attribute &rhs) const;
-};
-
-/// Clients of this analysis can either use VRPAnalysis or extend
-///   VRPAttribute: To support comparison for more Attribute types.
-///   VRPAnalysis: To support more Operations.
-struct VRPAnalysis : public VRPAnalysisBase<VRPAttribute> {
-  VRPAnalysis(mlir::MLIRContext *c) : VRPAnalysisBase<VRPAttribute>(c) {}
-  LogicalResult
-  rangeFold(Operation *op, ArrayRef<VRPRange<VRPAttribute>> operands,
-            SmallVectorImpl<VRPRange<VRPAttribute>> &results) override;
+// This class implements a comparison operator over Attributes and a range
+// fold function (i.e., the transfer function for the data-flow analysis)
+// for known types and operations. Clients can extend as necessary.
+struct VRPImplBase {
+  static llvm::Optional<bool> cmpLT(const Attribute &lhs, const Attribute &rhs);
+  static LogicalResult
+  rangeFold(Operation *op, ArrayRef<VRPRange<VRPImplBase>> operands,
+            SmallVectorImpl<VRPRange<VRPImplBase>> &results);
 };
 
 } // namespace mlir

@@ -27,7 +27,7 @@ struct TestValueRangePropagationPass
   }
   void runOnFunction() override {
     llvm::errs() << "Testing function: " << getFunction().getName() << "\n";
-    VRPAnalysis analysis(&getContext());
+    VRPAnalysis<VRPImplBase> analysis(&getContext());
     analysis.run(getOperation());
     analysis.print(getOperation(), llvm::errs());
   }

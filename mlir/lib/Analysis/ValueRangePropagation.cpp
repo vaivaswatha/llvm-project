@@ -25,126 +25,37 @@
 
 namespace mlir {
 
-template <typename T>
-void VRPValue<T>::print(raw_ostream &os) const {
-  if (isPInfinity()) {
-    os << "INF";
-  } else if (isMInfinity()) {
-    os << "-INF";
-  } else {
-    value.print(os);
-  }
-}
-
-template <typename T>
-void VRPValue<T>::dump() const {
-  print(llvm::errs());
-}
-
-template <typename T>
-void VRPLatticeEl<T>::print(raw_ostream &os) const {
-  os << "[";
-  range.first.print(os);
-  os << " ; ";
-  range.second.print(os);
-  os << "]";
-}
-
-template <typename T>
-void VRPLatticeEl<T>::dump() const {
-  print(llvm::errs());
-}
-
-template <typename VRV>
-ChangeResult VRPAnalysisBase<VRV>::visitOperation(
-    Operation *op, ArrayRef<LatticeElement<VRPLatticeEl<VRV>> *> operands) {
-
-  using VRPV = VRPValue<VRV>;
-  using VRPR = VRPRange<VRV>;
-  SmallVector<VRPR> opdsRange(
-      llvm::map_range(operands, [](LatticeElement<VRPLatticeEl<VRV>> *value) {
-        return value->getValue().getRange();
-      }));
-
-  SmallVector<VRPR> foldResults;
-  if (failed(rangeFold(op, opdsRange, foldResults))) {
-    return this->markAllPessimisticFixpoint(op->getResults());
-  }
-
-  // Merge the fold results into the lattice for this operation.
-  assert(foldResults.size() == op->getNumResults() && "invalid result size");
-  ChangeResult result = ChangeResult::NoChange;
-  for (unsigned i = 0, e = foldResults.size(); i != e; ++i) {
-    LatticeElement<VRPLatticeEl<VRV>> &lattice =
-        this->getLatticeElement(op->getResult(i));
-
-    // The VRP lattice doesn't satisfy the ascending chain condition.
-    // So we need a widening operator.
-    // See "Static Determination of Dynamic Properties of Programs"
-    // - Cousot & Cousot
-    if (!lattice.isUninitialized()) {
-      VRPR prevResult = lattice.getValue().getRange();
-      if (foldResults[i].first.cmpLT(prevResult.first).getValueOr(true)) {
-        foldResults[i].first = VRPV::getMInfinity();
-      }
-      if (foldResults[i].second.cmpGT(prevResult.second).getValueOr(true)) {
-        foldResults[i].second = VRPV::getPInfinity();
-      }
-    }
-    result |= lattice.join(foldResults[i]);
-  }
-  return result;
-}
-
-template <typename VRV>
-void VRPAnalysisBase<VRV>::print(Operation *topLevelOp, raw_ostream &os) {
-  topLevelOp->walk([&os, this](mlir::Operation *op) {
-    for (Value result : op->getOpResults()) {
-      LatticeElement<VRPLatticeEl<VRV>> *lattice =
-          this->lookupLatticeElement(result);
-      if (lattice && !lattice->isUninitialized()) {
-        os << result << " : ";
-        lattice->getValue().print(os);
-        os << "\n";
-      }
-    }
-  });
-}
-
-template <typename T>
-void VRPAnalysisBase<T>::dump() const {
-  print(llvm::errs());
-}
-
-llvm::Optional<bool> VRPAttribute::cmpLT(const Attribute &rhs) const {
-  Type thisType = getType();
+llvm::Optional<bool> VRPImplBase::cmpLT(const Attribute &lhs,
+                                        const Attribute &rhs) {
+  Type lhsType = lhs.getType();
   Type rhsType = rhs.getType();
 
-  if (thisType != rhsType) {
+  if (lhsType != rhsType) {
     return {};
   }
-  if (thisType.isa<FloatType>()) {
-    return {cast<FloatAttr>().getValue() < rhs.cast<FloatAttr>().getValue()};
+  if (lhsType.isa<FloatType>()) {
+    return {lhs.cast<FloatAttr>().getValue() <
+            rhs.cast<FloatAttr>().getValue()};
   }
-  if (IntegerType thisIntType = thisType.dyn_cast<IntegerType>()) {
-    if (thisIntType.isSigned()) {
-      return cast<IntegerAttr>().getValue().slt(
+  if (IntegerType lhsIntType = lhsType.dyn_cast<IntegerType>()) {
+    if (lhsIntType.isSigned()) {
+      return lhs.cast<IntegerAttr>().getValue().slt(
           rhs.cast<IntegerAttr>().getValue());
     }
     // TODO: What to do for signless?
-    return cast<IntegerAttr>().getValue().ult(
+    return lhs.cast<IntegerAttr>().getValue().ult(
         rhs.cast<IntegerAttr>().getValue());
   }
   // Don't know
   return {};
 }
 
-using VRPV = VRPValue<VRPAttribute>;
-using VRPR = VRPRange<VRPAttribute>;
+using VRPV = VRPAttribute<VRPImplBase>;
+using VRPR = VRPRange<VRPImplBase>;
 
 // Given a range for each input operand, try to compute a range for the outputs.
 // Partial reference: https://en.wikipedia.org/wiki/Interval_arithmetic
-LogicalResult VRPAnalysis::rangeFold(Operation *op, ArrayRef<VRPR> operands,
+LogicalResult VRPImplBase::rangeFold(Operation *op, ArrayRef<VRPR> operands,
                                      SmallVectorImpl<VRPR> &results) {
 
   assert(op->getNumOperands() == operands.size());
