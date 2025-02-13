@@ -60,6 +60,9 @@ struct TestLinalgTransforms
   Option<bool> testPatterns{*this, "test-patterns",
                             llvm::cl::desc("Test a mixed set of patterns"),
                             llvm::cl::init(false)};
+  Option<bool> testTileBatchMatmul{*this, "test-tile-batch-matmul",
+                                   llvm::cl::desc("Test tile batch matmul"),
+                                   llvm::cl::init(false)};
   Option<bool> testVectorTransferForwardingPatterns{
       *this, "test-vector-transfer-forwarding-patterns",
       llvm::cl::desc(
@@ -227,10 +230,18 @@ static void applyDecomposeWinogradOps(func::FuncOp funcOp) {
   (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 }
 
+static void applyTileBatchMamtul(func::FuncOp funcOp) {
+  RewritePatternSet patterns(funcOp.getContext());
+  populateTileBatchMatmulPatterns(patterns);
+  (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+}
+
 /// Apply transformations specified as patterns.
 void TestLinalgTransforms::runOnOperation() {
   if (testPatterns)
     return applyPatterns(getOperation());
+  if (testTileBatchMatmul)
+    return applyTileBatchMamtul(getOperation());
   if (testVectorTransferForwardingPatterns)
     return applyVectorTransferForwardingPatterns(getOperation());
   if (testGenericToVectorPattern)

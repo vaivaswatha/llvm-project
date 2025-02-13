@@ -1055,6 +1055,25 @@ def AffineVectorStoreOp : AffineStoreOpBase<"vector_store"> {
   let hasVerifier = 1;
 }
 
+def AffineVectorMatmulOp : Affine_Op<"vector_matmul"> {
+  let summary = "affine vector matmul operation";
+  let description = [{
+    Vector matrix multiplication
+  }];
+
+  let results = (outs AnyVector:$result);
+  let arguments = (ins AnyVector:$lhs, AnyVector:$rhs);
+
+  let builders = [
+    /// Builds an affine vector load op operands.
+    OpBuilder<(ins "VectorType":$resultType, "ValueRange":$operands)>,
+  ];
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // AffineDelinearizeIndexOp
 //===----------------------------------------------------------------------===//

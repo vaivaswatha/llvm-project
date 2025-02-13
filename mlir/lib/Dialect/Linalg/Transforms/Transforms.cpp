@@ -26,7 +26,10 @@
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -1563,6 +1566,150 @@ DownscaleConv2DOp::returningMatchAndRewrite(Conv2DOp convOp,
   rewriter.replaceOp(convOp, inserted);
 
   return conv1DOp;
+}
+
+/// Pattern to replace
+///
+///   linalg.batch_matmul ins(%arg0, %arg1 : memref<1xNxNxf32>,
+///   memref<1xNxNxf32>) outs(%alloc : memref<1xNxNxf32>)
+///
+/// with
+///
+///    affine.for %ignore = 0 to 1 {
+///      affine.parallel (%ii) = (0) to (N) step (32) {
+///        affine.for %jj = 0 to N step 32 {
+///          affine.for %kk = 0 to N step 32 {
+///            %C = memref.subview %alloc[%ignore, %ii, %jj][1, 32, 32][1, 1, 1]
+///            : memref<1xNxNxf32> to memref<1x32x32xf32, strided<[N*N, N, 1],
+///            offset: ?>> %A = memref.subview %arg0[%ignore, %ii, %kk][1, 32,
+///            32][1, 1, 1] : memref<1xNxNxf32> to memref<1x32x32xf32,
+///            strided<[N*N, N, 1], offset: ?>> %B = memref.subview
+///            %arg1[%ignore, %kk, %jj][1, 32, 32][1, 1, 1] : memref<1xNxNxf32>
+///            to memref<1x32x32xf32, strided<[N*N, N, 1], offset: ?>>
+///            linalg.batch_matmul ins(%A, %B : memref<1x32x32xf32,
+///            strided<[N*N, N, 1], offset: ?>>, memref<1x32x32xf32,
+///            strided<[N*N, N, 1], offset: ?>>)
+///                          outs(%C : memref<1x32x32xf32, strided<[N*N, N, 1],
+///                          offset: ?>>)
+///          }
+///        }
+///      }
+///   }
+///
+FailureOr<Operation *>
+mlir::linalg::tileBatchMatmul(RewriterBase &rewriter,
+                              linalg::BatchMatmulOp matmulOp) {
+
+  DBGS() << "tileBatchMatmul: attempting: " << matmulOp << "\n";
+
+  auto opd0 = matmulOp.getInputs()[0];
+  auto opd1 = matmulOp.getInputs()[1];
+  auto outputOpd = matmulOp.getOutputs()[0];
+
+  // Check that we have memrefs and not tensors.
+  if (!mlir::isa<MemRefType>(opd0.getType()))
+    return failure();
+
+  auto opd0Dims = mlir::cast<ShapedType>(opd0.getType());
+  auto opd1Dims = mlir::cast<ShapedType>(opd1.getType());
+  if (opd0Dims.getRank() != 3 || opd1Dims.getRank() != 3)
+    return failure();
+
+  // Check that the batch dimension is 1.
+  if (opd0Dims.getDimSize(0) != 1 || opd1Dims.getDimSize(0) != 1)
+    return failure();
+
+  // Check that the matrix dimensions are multiples of 32 and greater than 32 to
+  // allow for tiling.
+  unsigned m = opd0Dims.getDimSize(1);
+  unsigned n = opd0Dims.getDimSize(2);
+  assert(opd1Dims.getDimSize(1) == n);
+  unsigned k = opd1Dims.getDimSize(2);
+  if (m <= 32 || n <= 32 || k <= 32 || m % 32 != 0 || n % 32 != 0 ||
+      k % 32 != 0) {
+    DBGSNL() << "Input matrix dimensions " << m << " x " << n << " x " << k
+             << " are not suitable for tiling this MatMul\n";
+    return failure();
+  }
+
+  auto loc = matmulOp->getLoc();
+  auto targetVectorType = VectorType::get({32, 32}, opd0Dims.getElementType());
+
+  auto ignoreFor =
+      rewriter.create<affine::AffineForOp>(loc, 0, 1, 1, ValueRange{});
+  auto ignoreIv = ignoreFor.getInductionVar();
+  auto *ignoreForBody = ignoreFor.getBody();
+
+  {
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(ignoreForBody);
+
+    auto iiFor =
+        rewriter.create<affine::AffineForOp>(loc, 0, m, 32, ValueRange{});
+    auto iiIv = iiFor.getInductionVar();
+    auto *iiBody = iiFor.getBody();
+
+    {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(iiBody);
+
+      auto jjFor =
+          rewriter.create<affine::AffineForOp>(loc, 0, n, 32, ValueRange{});
+      auto jjIv = jjFor.getInductionVar();
+      auto *jjBody = jjFor.getBody();
+
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(jjBody);
+
+        auto kkFor =
+            rewriter.create<affine::AffineForOp>(loc, 0, k, 32, ValueRange{});
+        auto kkIv = kkFor.getInductionVar();
+
+        {
+          mlir::OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(kkFor.getBody());
+
+          // Vector load opd0
+          auto a = rewriter.create<affine::AffineVectorLoadOp>(
+              loc, targetVectorType, opd0, ValueRange{ignoreIv, iiIv, kkIv});
+          auto b = rewriter.create<affine::AffineVectorLoadOp>(
+              loc, targetVectorType, opd1, ValueRange{ignoreIv, kkIv, jjIv});
+          auto c = rewriter.create<affine::AffineVectorLoadOp>(
+              loc, targetVectorType, outputOpd,
+              ValueRange{ignoreIv, iiIv, jjIv});
+          auto c2 = rewriter.create<affine::AffineVectorMatmulOp>(
+              loc, targetVectorType, a, b);
+          auto c3 = rewriter.create<arith::AddFOp>(loc, c, c2);
+          rewriter.create<affine::AffineVectorStoreOp>(
+              loc, c3, outputOpd, ValueRange{ignoreIv, iiIv, jjIv});
+        }
+      }
+    }
+  }
+  rewriter.replaceOp(matmulOp, ignoreFor);
+
+  DBGS() << "tileBatchMatmul: successful" << "\n";
+
+  return failure();
+}
+
+namespace {
+struct TileBatchMatmul final : public OpRewritePattern<linalg::BatchMatmulOp> {
+  TileBatchMatmul(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(linalg::BatchMatmulOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(tileBatchMatmul(rewriter, op))) {
+      return failure();
+    }
+    return success();
+  }
+};
+} // namespace
+
+void linalg::populateTileBatchMatmulPatterns(RewritePatternSet &patterns) {
+  patterns.add<TileBatchMatmul>(patterns.getContext());
 }
 
 void linalg::populateDecomposeConvolutionPatterns(RewritePatternSet &patterns,

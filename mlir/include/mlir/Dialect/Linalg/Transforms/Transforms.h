@@ -13,6 +13,7 @@
 
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -1332,6 +1333,10 @@ FailureOr<Operation *> transposeBatchMatmul(RewriterBase &rewriter,
                                             linalg::BatchMatmulOp op,
                                             bool transposeLHS = true);
 
+/// Tile batch matmul ops.
+FailureOr<Operation *> tileBatchMatmul(RewriterBase &rewriter,
+                                       linalg::BatchMatmulOp op);
+
 /// Convert linalg.conv_2d_nhwc_fhwc to Winograd Conv2D algorithm
 /// F(m x m, r x r). m is the dimension size of output and r is the dimension
 /// size of filter.
@@ -1604,6 +1609,9 @@ void populateLinalgGenericOpsSpecializationPatterns(
 void populateDecomposeConvolutionPatterns(RewritePatternSet &patterns,
                                           PatternBenefit benefit = 1);
 
+/// Populate pattern to tile a batch matmul operation
+void populateTileBatchMatmulPatterns(RewritePatternSet &patterns);
+
 /// Populates patterns to transform linalg.conv_2d_xxx operations into
 /// linalg.generic (for img2col packing) and linalg.matmul.
 /// \see rewriteInIm2Col for more details.
@@ -1750,10 +1758,12 @@ void populateWinogradConv2DPatterns(RewritePatternSet &patterns, int64_t m,
 void populateDecomposeWinogradOpsPatterns(RewritePatternSet &patterns);
 
 /// Adds patterns that reduce the rank of named contraction ops that have
-/// unit dimensions in the operand(s) by converting to a sequence of `collapse_shape`,
-/// `<corresponding linalg named op>`, `expand_shape` (if on tensors).  For example a
-/// `linalg.batch_matmul` with unit batch size will convert to `linalg.matmul`
-/// and a `linalg.matvec` with with unit spatial dim in lhs will convert to a `linalg.dot`.
+/// unit dimensions in the operand(s) by converting to a sequence of
+/// `collapse_shape`,
+/// `<corresponding linalg named op>`, `expand_shape` (if on tensors).  For
+/// example a `linalg.batch_matmul` with unit batch size will convert to
+/// `linalg.matmul` and a `linalg.matvec` with with unit spatial dim in lhs will
+/// convert to a `linalg.dot`.
 void populateContractionOpRankReducingPatterns(RewritePatternSet &patterns);
 
 } // namespace linalg
