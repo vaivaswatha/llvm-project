@@ -1576,26 +1576,19 @@ DownscaleConv2DOp::returningMatchAndRewrite(Conv2DOp convOp,
 /// with
 ///
 ///    affine.for %ignore = 0 to 1 {
-///      affine.parallel (%ii) = (0) to (N) step (32) {
-///        affine.for %jj = 0 to N step 32 {
-///          affine.for %kk = 0 to N step 32 {
-///            %C = memref.subview %alloc[%ignore, %ii, %jj][1, 32, 32][1, 1, 1]
-///            : memref<1xNxNxf32> to memref<1x32x32xf32, strided<[N*N, N, 1],
-///            offset: ?>> %A = memref.subview %arg0[%ignore, %ii, %kk][1, 32,
-///            32][1, 1, 1] : memref<1xNxNxf32> to memref<1x32x32xf32,
-///            strided<[N*N, N, 1], offset: ?>> %B = memref.subview
-///            %arg1[%ignore, %kk, %jj][1, 32, 32][1, 1, 1] : memref<1xNxNxf32>
-///            to memref<1x32x32xf32, strided<[N*N, N, 1], offset: ?>>
-///            linalg.batch_matmul ins(%A, %B : memref<1x32x32xf32,
-///            strided<[N*N, N, 1], offset: ?>>, memref<1x32x32xf32,
-///            strided<[N*N, N, 1], offset: ?>>)
-///                          outs(%C : memref<1x32x32xf32, strided<[N*N, N, 1],
-///                          offset: ?>>)
+///      affine.parallel (%ii) = (0) to (128) step (32) {
+///        affine.for %jj = 0 to 128 step 32 {
+///          affine.for %kk = 0 to 128 step 32 {
+////            %A = affine.vector_load %arg0[%ignore, %ii, %kk] : memref<1x128x128xf32>, vector<32x32xf32>
+///            %B = affine.vector_load %arg1[%ignore, %kk, %jj] : memref<1x128x128xf32>, vector<32x32xf32>
+///            %C = affine.vector_load %alloc[%ignore, %ii, %jj] : memref<1x128x128xf32>, vector<32x32xf32>
+///            %C2 = affine.vector_matmul %A, %B : (vector<32x32xf32>, vector<32x32xf32>) -> vector<32x32xf32>
+///            %C3 = arith.addf %C, %C2 : vector<32x32xf32>
+///            affine.vector_store %C3, %alloc[%ignore, %ii, %jj] : memref<1x128x128xf32>, vector<32x32xf32>
 ///          }
 ///        }
 ///      }
-///   }
-///
+///    }
 FailureOr<Operation *>
 mlir::linalg::tileBatchMatmul(RewriterBase &rewriter,
                               linalg::BatchMatmulOp matmulOp) {
